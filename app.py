@@ -13,10 +13,11 @@ st.set_page_config(
 )
 st.title("✂️ AI Square Video Clipper (1:1)")
 st.caption(
-    "Paste YouTube URL → Gemini finds viral moment → Auto-crops 1:1 for feed"
+    "Paste YouTube URL or Upload MP4 → Gemini finds viral moment → Auto-crops"
+    " 1:1"
 )
 
-# API Key Handling (Streamlit Secrets ya Direct Input)
+# API Key Handling
 api_key = st.secrets.get("GEMINI_API_KEY", None)
 if not api_key:
   api_key = st.sidebar.text_input(
@@ -25,28 +26,40 @@ if not api_key:
       help="Get free key from aistudio.google.com",
   )
 
-url = st.text_input(
-    "YouTube Video Link:",
-    placeholder="https://www.youtube.com/watch?v=...",
-)
+# Input method: Link or Direct File
+tab1, tab2 = st.tabs(["🔗 YouTube Link", "📁 Upload Video File"])
+url = None
+uploaded_file = None
 
+with tab1:
+  url = st.text_input(
+      "YouTube Video Link:",
+      placeholder="https://www.youtube.com/watch?v=...",
+  )
 
-def sanitize_filename(name):
-  return re.sub(r"[^\w\-_\. ]", "_", name)
+with tab2:
+  uploaded_file = st.file_uploader("Apni raw MP4 video yahan drop karo", type=["mp4", "mov"])
 
 
 def download_video(yt_url):
   out_tmpl = "downloads/%(id)s.%(ext)s"
+  # Bypass 403 Forbidden using mobile player client
   ydl_opts = {
-      "format": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best",
+      "format": "best[ext=mp4]/best",
       "outtmpl": out_tmpl,
       "quiet": True,
       "no_warnings": True,
+      "extractor_args": {"youtube": {"player_client": ["android", "ios"]}},
+      "http_headers": {
+          "User-Agent": (
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+          )
+      },
   }
   with yt_dlp.YoutubeDL(ydl_opts) as ydl:
     info = ydl.extract_info(yt_url, download=True)
     filename = ydl.prepare_filename(info)
-    return filename, info.get("title", "video")
+    return filename
 
 
 def analyze_with_gemini(video_path):
@@ -55,7 +68,6 @@ def analyze_with_gemini(video_path):
   with st.spinner("Gemini API video analyze kar raha hai..."):
     video_file = genai.upload_file(path=video_path)
 
-    # Wait for processing
     while video_file.state.name == "PROCESSING":
       time.sleep(3)
       video_file = genai.get_file(video_file.name)
@@ -82,7 +94,6 @@ def analyze_with_gemini(video_path):
 
 def process_square_video(input_path, start, end, hook, output_path):
   clean_hook = hook.replace("'", "").replace(":", "-")
-  # Filter: 1:1 Center crop + Upper-center hook text overlay
   vf_filter = (
       f"crop=ih:ih:(iw-ih)/2:0,"
       f"drawtext=text='{clean_hook}':fontcolor=white:fontsize=32:box=1:boxcolor=black@0.7:boxborderw=12:x=(w-text_w)/2:y=60"
@@ -113,16 +124,23 @@ def process_square_video(input_path, start, end, hook, output_path):
 if st.button("Generate 1:1 Clip", type="primary"):
   if not api_key:
     st.error("Pehle Gemini API key daalo!")
-  elif not url:
-    st.error("YouTube URL paste karo!")
+  elif not url and not uploaded_file:
+    st.error("YouTube URL daalo ya file upload karo!")
   else:
     os.makedirs("downloads", exist_ok=True)
     os.makedirs("output", exist_ok=True)
 
     try:
+      raw_file = None
       with st.status("Ship mode activated...", expanded=True) as status:
-        st.write("1. Video download ho rahi hai...")
-        raw_file, title = download_video(url)
+        if uploaded_file is not None:
+          st.write("1. Uploaded video load ho rahi hai...")
+          raw_file = os.path.join("downloads", uploaded_file.name)
+          with open(raw_file, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        else:
+          st.write("1. Video download ho rahi hai (Bypassing 403)...")
+          raw_file = download_video(url)
 
         st.write("2. AI se viral hook aur timestamps dhoondh rahe hain...")
         meta = analyze_with_gemini(raw_file)
@@ -154,4 +172,4 @@ if st.button("Generate 1:1 Clip", type="primary"):
 
     except Exception as e:
       st.error(f"Error aaya: {str(e)}")
-      
+        
